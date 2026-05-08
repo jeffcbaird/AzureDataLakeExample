@@ -1,0 +1,30 @@
+{
+    "name": "aas_resume",
+    "properties": {
+        "description": "Resumes the AAS server at 07:00 UTC on weekdays ahead of business hours.",
+        "type": "ScheduleTrigger",
+        "typeProperties": {
+            "recurrence": {
+                "frequency": "Week",
+                "interval": 1,
+                "startTime": "2024-01-01T07:00:00Z",
+                "timeZone": "UTC",
+                "schedule": {
+                    "weekDays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+                }
+            }
+        },
+        "pipelines": [
+            {
+                "pipelineReference": {
+                    "referenceName": "aas_pause_resume",
+                    "type": "PipelineReference"
+                },
+                "parameters": {
+                    "action": "resume"
+                }
+            }
+        ],
+        "annotations": []
+    }
+}

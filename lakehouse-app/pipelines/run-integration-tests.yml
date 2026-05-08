@@ -1,0 +1,91 @@
+# run-integration-tests.yml
+# Scheduled every 15 minutes against lakehouse-app main.
+# Authenticates to Key Vault via the pipeline service principal, runs
+# pytest tests/integration, and posts failures to a Teams webhook.
+#
+# Pipeline variables (set in Azure DevOps Library):
+#   keyVaultUrl      — e.g. https://kv-lakehouse-dev.vault.azure.net/
+#   teamsWebhookUrl  — incoming webhook URL for failure notifications
+
+trigger: none
+
+schedules:
+  - cron: "*/15 * * * *"
+    displayName: Every 15 minutes
+    branches:
+      include:
+        - main
+    always: true
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  PYTHON_VERSION: "3.11"
+  APP_DIR: "$(System.DefaultWorkingDirectory)/lakehouse-app"
+
+stages:
+  - stage: IntegrationTests
+    displayName: Integration Tests — 15 min heartbeat
+    jobs:
+      - job: RunTests
+        displayName: pytest tests/integration
+        steps:
+          - task: UsePythonVersion@0
+            displayName: Use Python $(PYTHON_VERSION)
+            inputs:
+              versionSpec: $(PYTHON_VERSION)
+
+          # Authenticate pip against the private Artifacts feed so
+          # lakehouse-common can be resolved.
+          - task: PipAuthenticate@1
+            displayName: Authenticate against lakehouse-feed
+            inputs:
+              artifactFeeds: lakehouse-feed
+
+          - script: |
+              pip install --upgrade pip
+              pip install \
+                lakehouse-common \
+                requests \
+                paramiko \
+                azure-identity \
+                azure-keyvault-secrets \
+                pytest \
+                --extra-index-url $(PIP_EXTRA_INDEX_URL)
+            displayName: Install dependencies
+            workingDirectory: $(APP_DIR)
+
+          - script: |
+              pytest tests/integration \
+                --tb=short \
+                --junitxml=test-results.xml \
+                -v \
+                -m integration
+            displayName: Run integration tests
+            workingDirectory: $(APP_DIR)
+            continueOnError: true
+            env:
+              KEY_VAULT_URL: $(keyVaultUrl)
+              SALES_API_BASE_URL: $(salesApiBaseUrl)
+              INVENTORY_API_BASE_URL: $(inventoryApiBaseUrl)
+              FTP_PARTNER_USE_SFTP: "true"
+
+          - task: PublishTestResults@2
+            displayName: Publish test results
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: "$(APP_DIR)/test-results.xml"
+            condition: always()
+
+          # Post to Teams on failure
+          - script: |
+              curl -s -X POST "$TEAMS_WEBHOOK_URL" \
+                -H 'Content-Type: application/json' \
+                -d "{
+                  \"text\": \"⚠️ **Integration tests FAILED** on \`lakehouse-app\` main.\\nBuild: $BUILD_BUILDNUMBER\\nSee: $BUILD_BUILDURI\"
+                }"
+            displayName: Notify Teams on failure
+            condition: failed()
+            env:
+              TEAMS_WEBHOOK_URL: $(teamsWebhookUrl)

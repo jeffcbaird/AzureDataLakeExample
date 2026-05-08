@@ -1,0 +1,233 @@
+# Triggered on merge to main when Power BI artifacts or this file change.
+# Uses the Power BI REST API (via Azure CLI + Power BI CLI extension) to:
+#   1. Create/ensure workspaces exist for the target environment.
+#   2. Import/update the AAS Live Connection dataset (standard dashboards).
+#   3. Import/update the Synapse Serverless DirectQuery dataset (ad-hoc analysts).
+#   4. Configure the Serverless dataset refresh schedule (fires after AAS refresh).
+#   5. Publish the reports and package them as a Power BI app.
+#
+# Prerequisites (configured once per environment):
+#   - Service principal with Power BI Admin or Workspace Admin role.
+#   - Variable group "powerbi-${{ parameters.environment }}" containing:
+#       PBI_CLIENT_ID, PBI_CLIENT_SECRET, PBI_TENANT_ID,
+#       PBI_WORKSPACE_NAME, AAS_SERVER_FULL_NAME, SERVERLESS_ENDPOINT
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - "lakehouse-app/pipelines/deploy-powerbi.yml"
+
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+parameters:
+  - name: environment
+    displayName: Target environment
+    type: string
+    default: dev
+    values: [dev, prod]
+
+variables:
+  - group: "powerbi-${{ parameters.environment }}"
+  - name: WORKSPACE_NAME
+    value: "lakehouse-${{ parameters.environment }}"
+  - name: AAS_DATASET_NAME
+    value: "lakehouse-aas-live"
+  - name: DQ_DATASET_NAME
+    value: "lakehouse-serverless-dq"
+
+stages:
+  - stage: DeployPowerBI
+    displayName: "Deploy Power BI — ${{ parameters.environment }}"
+    jobs:
+      - deployment: PublishDatasets
+        displayName: Create workspaces and publish datasets
+        environment: lakehouse-${{ parameters.environment }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                # ── Authenticate ──────────────────────────────────────────────
+                - task: AzureCLI@2
+                  displayName: Get Power BI bearer token
+                  name: GetPBIToken
+                  inputs:
+                    azureSubscription: lakehouse-azure
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      TOKEN=$(curl -s -X POST \
+                        "https://login.microsoftonline.com/$(PBI_TENANT_ID)/oauth2/v2.0/token" \
+                        -d "grant_type=client_credentials" \
+                        -d "client_id=$(PBI_CLIENT_ID)" \
+                        -d "client_secret=$(PBI_CLIENT_SECRET)" \
+                        -d "scope=https://analysis.windows.net/powerbi/api/.default" \
+                        | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+                      echo "##vso[task.setvariable variable=PBI_TOKEN;issecret=true]$TOKEN"
+
+                # ── 1. Ensure workspace exists ────────────────────────────────
+                - task: AzureCLI@2
+                  displayName: Create/verify workspace
+                  inputs:
+                    azureSubscription: lakehouse-azure
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      # Check if workspace already exists
+                      WORKSPACE_ID=$(curl -s -X GET \
+                        "https://api.powerbi.com/v1.0/myorg/groups?filter=name eq '$(WORKSPACE_NAME)'" \
+                        -H "Authorization: Bearer $(PBI_TOKEN)" \
+                        | python3 -c "
+                      import sys, json
+                      data = json.load(sys.stdin)
+                      groups = data.get('value', [])
+                      print(groups[0]['id'] if groups else '')
+                      ")
+
+                      if [ -z "$WORKSPACE_ID" ]; then
+                        echo "Creating workspace: $(WORKSPACE_NAME)"
+                        WORKSPACE_ID=$(curl -s -X POST \
+                          "https://api.powerbi.com/v1.0/myorg/groups" \
+                          -H "Authorization: Bearer $(PBI_TOKEN)" \
+                          -H "Content-Type: application/json" \
+                          -d "{\"name\": \"$(WORKSPACE_NAME)\"}" \
+                          | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+                      fi
+
+                      echo "Workspace ID: $WORKSPACE_ID"
+                      echo "##vso[task.setvariable variable=WORKSPACE_ID]$WORKSPACE_ID"
+                    env:
+                      PBI_TOKEN: $(PBI_TOKEN)
+
+                # ── 2. Publish AAS Live Connection dataset ────────────────────
+                - task: AzureCLI@2
+                  displayName: Publish AAS Live Connection dataset
+                  inputs:
+                    azureSubscription: lakehouse-azure
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      # Build minimal PBIX-compatible dataset definition via REST API
+                      curl -s -X POST \
+                        "https://api.powerbi.com/v1.0/myorg/groups/$(WORKSPACE_ID)/datasets" \
+                        -H "Authorization: Bearer $(PBI_TOKEN)" \
+                        -H "Content-Type: application/json" \
+                        -d '{
+                          "name": "$(AAS_DATASET_NAME)",
+                          "defaultMode": "AsAzure",
+                          "tables": [],
+                          "datasources": [{
+                            "datasourceType": "AnalysisServices",
+                            "connectionDetails": {
+                              "server": "$(AAS_SERVER_FULL_NAME)",
+                              "database": "lakehouse-model"
+                            }
+                          }]
+                        }' \
+                        | python3 -c "import sys,json; d=json.load(sys.stdin); print('Dataset ID:', d.get('id', d))"
+                    env:
+                      PBI_TOKEN: $(PBI_TOKEN)
+
+                # ── 3. Publish Synapse Serverless DirectQuery dataset ─────────
+                - task: AzureCLI@2
+                  displayName: Publish Serverless DirectQuery dataset
+                  inputs:
+                    azureSubscription: lakehouse-azure
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      DQ_DATASET_ID=$(curl -s -X POST \
+                        "https://api.powerbi.com/v1.0/myorg/groups/$(WORKSPACE_ID)/datasets" \
+                        -H "Authorization: Bearer $(PBI_TOKEN)" \
+                        -H "Content-Type: application/json" \
+                        -d "{
+                          \"name\": \"$(DQ_DATASET_NAME)\",
+                          \"defaultMode\": \"DirectQuery\",
+                          \"tables\": [
+                            {
+                              \"name\": \"v_fact_orders\",
+                              \"columns\": [
+                                {\"name\": \"order_id\",      \"dataType\": \"string\"},
+                                {\"name\": \"customer_id\",   \"dataType\": \"string\"},
+                                {\"name\": \"product_name\",  \"dataType\": \"string\"},
+                                {\"name\": \"amount\",        \"dataType\": \"double\"},
+                                {\"name\": \"order_date\",    \"dataType\": \"dateTime\"},
+                                {\"name\": \"status\",        \"dataType\": \"string\"}
+                              ]
+                            },
+                            {
+                              \"name\": \"v_daily_revenue_summary\",
+                              \"columns\": [
+                                {\"name\": \"order_date\",       \"dataType\": \"dateTime\"},
+                                {\"name\": \"total_revenue\",    \"dataType\": \"double\"},
+                                {\"name\": \"order_count\",      \"dataType\": \"int64\"},
+                                {\"name\": \"revenue_7d_avg\",   \"dataType\": \"double\"}
+                              ]
+                            }
+                          ],
+                          \"datasources\": [{
+                            \"datasourceType\": \"Sql\",
+                            \"connectionDetails\": {
+                              \"server\": \"$(SERVERLESS_ENDPOINT)\",
+                              \"database\": \"gold\"
+                            }
+                          }]
+                        }" \
+                        | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))")
+
+                      echo "##vso[task.setvariable variable=DQ_DATASET_ID]$DQ_DATASET_ID"
+                      echo "Serverless DQ dataset ID: $DQ_DATASET_ID"
+                    env:
+                      PBI_TOKEN: $(PBI_TOKEN)
+
+                # ── 4. Configure refresh schedule on Serverless dataset ───────
+                - task: AzureCLI@2
+                  displayName: Configure dataset refresh schedule
+                  inputs:
+                    azureSubscription: lakehouse-azure
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      # Refresh fires at 07:30 UTC on weekdays — after AAS Full process completes.
+                      curl -s -X PATCH \
+                        "https://api.powerbi.com/v1.0/myorg/groups/$(WORKSPACE_ID)/datasets/$(DQ_DATASET_ID)/refreshSchedule" \
+                        -H "Authorization: Bearer $(PBI_TOKEN)" \
+                        -H "Content-Type: application/json" \
+                        -d '{
+                          "value": {
+                            "enabled": true,
+                            "days": ["Monday","Tuesday","Wednesday","Thursday","Friday"],
+                            "times": ["07:30"],
+                            "localTimeZoneId": "UTC",
+                            "notifyOption": "MailOnFailure"
+                          }
+                        }' | python3 -c "import sys; print(sys.stdin.read() or 'Schedule set OK')"
+                    env:
+                      PBI_TOKEN: $(PBI_TOKEN)
+
+                # ── 5. Publish app ────────────────────────────────────────────
+                - task: AzureCLI@2
+                  displayName: Publish workspace as Power BI app
+                  inputs:
+                    azureSubscription: lakehouse-azure
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      curl -s -X POST \
+                        "https://api.powerbi.com/v1.0/myorg/groups/$(WORKSPACE_ID)/PublishToApp" \
+                        -H "Authorization: Bearer $(PBI_TOKEN)" \
+                        -H "Content-Type: application/json" \
+                        -d "{
+                          \"name\": \"Lakehouse Analytics — ${{ parameters.environment }}\",
+                          \"description\": \"Gold-tier dashboards for the ${{ parameters.environment }} lakehouse. Standard reports use AAS Live Connection; ad-hoc workbooks use Synapse Serverless DirectQuery.\",
+                          \"accessRight\": \"View\"
+                        }" | python3 -c "import sys,json; d=json.load(sys.stdin); print('App URL:', d.get('webUrl', d))"
+                    env:
+                      PBI_TOKEN: $(PBI_TOKEN)

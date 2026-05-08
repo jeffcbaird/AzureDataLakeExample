@@ -1,0 +1,33 @@
+{
+    "name": "bronze_ndjson",
+    "properties": {
+        "description": "Parameterised ADLS Gen2 dataset pointing at bronze/<source>/<date>/data.ndjson. Used by Silver pipelines to verify file presence after ingestion.",
+        "linkedServiceName": {
+            "referenceName": "ls-adls",
+            "type": "LinkedServiceReference"
+        },
+        "parameters": {
+            "source": {
+                "type": "String",
+                "defaultValue": ""
+            },
+            "date": {
+                "type": "String",
+                "defaultValue": ""
+            }
+        },
+        "type": "Json",
+        "typeProperties": {
+            "location": {
+                "type": "AzureBlobFSLocation",
+                "fileSystem": "bronze",
+                "folderPath": {
+                    "value": "@concat(dataset().source, '/', dataset().date)",
+                    "type": "Expression"
+                },
+                "fileName": "data.ndjson"
+            }
+        },
+        "annotations": []
+    }
+}

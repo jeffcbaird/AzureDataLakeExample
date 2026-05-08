@@ -1,0 +1,104 @@
+{
+    "name": "ingest_sales",
+    "properties": {
+        "description": "Calls the ingest_sales Azure Function to write Bronze NDJSON, then triggers the Synapse Spark bronze-to-silver-sales job to promote the partition to Silver Delta.",
+        "activities": [
+            {
+                "name": "CallIngestSales",
+                "description": "POST to the ingest_sales HTTP-triggered function. Response body must include {\"record_count\": N}.",
+                "type": "AzureFunctionActivity",
+                "dependsOn": [],
+                "userProperties": [],
+                "typeProperties": {
+                    "functionName": "ingest_sales",
+                    "method": "POST",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": {
+                        "value": "@concat('{\"date\":\"', formatDateTime(utcNow(), 'yyyy-MM-dd'), '\"}')",
+                        "type": "Expression"
+                    }
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls-functions-dev",
+                    "type": "LinkedServiceReference"
+                },
+                "policy": {
+                    "timeout": "0.01:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 300,
+                    "secureOutput": false,
+                    "secureInput": false
+                }
+            },
+            {
+                "name": "CaptureRecordCount",
+                "description": "Store the record_count from the function response for downstream monitoring.",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "CallIngestSales",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "record_count",
+                    "value": {
+                        "value": "@activity('CallIngestSales').output.record_count",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "BronzeToSilverSales",
+                "description": "Run the bronze-to-silver-sales Spark Job Definition to validate, normalize, deduplicate and write the Silver Delta partition.",
+                "type": "SynapseNotebook",
+                "dependsOn": [
+                    {
+                        "activity": "CallIngestSales",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "sparkJob": {
+                        "referenceName": "bronze-to-silver-sales",
+                        "type": "SparkJobDefinitionReference"
+                    },
+                    "parameters": {
+                        "DATE": {
+                            "value": {
+                                "value": "@formatDateTime(utcNow(), 'yyyy-MM-dd')",
+                                "type": "Expression"
+                            },
+                            "type": "string"
+                        }
+                    },
+                    "conf": {
+                        "spark.dynamicAllocation.enabled": "false"
+                    }
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls-synapse-dev",
+                    "type": "LinkedServiceReference"
+                },
+                "policy": {
+                    "timeout": "01:00:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                }
+            }
+        ],
+        "variables": {
+            "record_count": {
+                "type": "Integer",
+                "defaultValue": 0
+            }
+        },
+        "annotations": []
+    }
+}

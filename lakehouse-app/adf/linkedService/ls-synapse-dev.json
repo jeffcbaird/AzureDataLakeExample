@@ -1,0 +1,21 @@
+{
+    "name": "ls-synapse-dev",
+    "properties": {
+        "description": "Linked service to the Synapse Analytics workspace (dev). Used by ADF to trigger Spark Job Definitions.",
+        "type": "AzureSynapseArtifacts",
+        "typeProperties": {
+            "endpoint": {
+                "value": "@{linkedService().synapseEndpoint}",
+                "type": "Expression"
+            },
+            "authentication": "MSI"
+        },
+        "parameters": {
+            "synapseEndpoint": {
+                "type": "String",
+                "defaultValue": "https://syn-lakehouse-dev.dev.azuresynapse.net"
+            }
+        },
+        "annotations": []
+    }
+}

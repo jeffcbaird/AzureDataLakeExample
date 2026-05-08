@@ -1,0 +1,32 @@
+{
+    "name": "canary_15min",
+    "properties": {
+        "description": "Fires every 15 minutes and runs both canary pipelines in parallel. Failures surface in ADF Monitor and trigger the Monitor alert configured in modules/monitoring.",
+        "type": "ScheduleTrigger",
+        "typeProperties": {
+            "recurrence": {
+                "frequency": "Minute",
+                "interval": 15,
+                "startTime": "2024-01-01T00:00:00Z",
+                "timeZone": "UTC"
+            }
+        },
+        "pipelines": [
+            {
+                "pipelineReference": {
+                    "referenceName": "canary_api_health",
+                    "type": "PipelineReference"
+                },
+                "parameters": {}
+            },
+            {
+                "pipelineReference": {
+                    "referenceName": "canary_ftp_health",
+                    "type": "PipelineReference"
+                },
+                "parameters": {}
+            }
+        ],
+        "annotations": []
+    }
+}

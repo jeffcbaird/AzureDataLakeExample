@@ -1,0 +1,30 @@
+{
+    "name": "aas_pause",
+    "properties": {
+        "description": "Pauses the AAS server at 20:00 UTC on weekdays to reduce overnight cost.",
+        "type": "ScheduleTrigger",
+        "typeProperties": {
+            "recurrence": {
+                "frequency": "Week",
+                "interval": 1,
+                "startTime": "2024-01-01T20:00:00Z",
+                "timeZone": "UTC",
+                "schedule": {
+                    "weekDays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+                }
+            }
+        },
+        "pipelines": [
+            {
+                "pipelineReference": {
+                    "referenceName": "aas_pause_resume",
+                    "type": "PipelineReference"
+                },
+                "parameters": {
+                    "action": "suspend"
+                }
+            }
+        ],
+        "annotations": []
+    }
+}

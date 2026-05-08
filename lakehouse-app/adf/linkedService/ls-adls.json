@@ -1,0 +1,11 @@
+{
+    "name": "ls-adls",
+    "properties": {
+        "description": "ADLS Gen2 storage account — used by Silver/Gold pipelines for dataset resolution. ADF managed identity must hold Storage Blob Data Contributor (granted via rbac.tf).",
+        "type": "AzureBlobFS",
+        "typeProperties": {
+            "url": "https://stlakehousedevadls.dfs.core.windows.net"
+        },
+        "annotations": []
+    }
+}

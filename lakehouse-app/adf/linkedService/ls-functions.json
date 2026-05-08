@@ -1,0 +1,12 @@
+{
+    "name": "ls-functions-dev",
+    "properties": {
+        "description": "Azure Function App — provisioned by Terraform (modules/functions). ADF uses MSI to authenticate. Function App must expose HTTP-triggered entry points for each source (see ingestion/api/function_app.py and ingestion/ftp/function_app.py).",
+        "type": "AzureFunction",
+        "typeProperties": {
+            "functionAppUrl": "https://func-lakehouse-dev.azurewebsites.net",
+            "authentication": "MSI"
+        },
+        "annotations": []
+    }
+}

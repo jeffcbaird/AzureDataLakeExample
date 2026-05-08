@@ -1,0 +1,25 @@
+{
+    "name": "daily_inventory",
+    "properties": {
+        "description": "Daily schedule trigger for ingest_inventory. Fires at 2024-01-01T02:35:00Z UTC.",
+        "type": "ScheduleTrigger",
+        "typeProperties": {
+            "recurrence": {
+                "frequency": "Day",
+                "interval": 1,
+                "startTime": "2024-01-01T02:35:00Z",
+                "timeZone": "UTC"
+            }
+        },
+        "pipelines": [
+            {
+                "pipelineReference": {
+                    "referenceName": "ingest_inventory",
+                    "type": "PipelineReference"
+                },
+                "parameters": {}
+            }
+        ],
+        "annotations": []
+    }
+}

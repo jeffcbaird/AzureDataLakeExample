@@ -1,0 +1,22 @@
+# Copy to terraform.tfvars (git-ignored) and fill in real values.
+# Never commit terraform.tfvars — it contains subscription IDs.
+
+subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id       = "00000000-0000-0000-0000-000000000000"
+environment     = "dev"
+location        = "westus2"
+project_name    = "lakehouse"
+
+tags = {
+  project     = "lakehouse"
+  environment = "dev"
+  managed_by  = "terraform"
+}
+
+# Keep false for the example project (enforced by variable validation).
+# Remove the validation block in variables.tf before setting to true in production.
+deploy_expensive_resources = false
+
+aas_admin_users = [
+  # "user@example.com",
+]

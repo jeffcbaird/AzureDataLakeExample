@@ -1,0 +1,83 @@
+# publish-common.yml
+# Builds and publishes the lakehouse-common wheel to the lakehouse-feed
+# Azure Artifacts feed whenever code under common/ changes on main.
+#
+# Prerequisites (one-time manual setup):
+#   1. A service connection named "lakehouse-azure" with Artifacts Contributor
+#      on the lakehouse-feed feed.
+#   2. The feed URL recorded in pip.ini and common/pyproject.toml [tool.hatch].
+#
+# Version bump policy: bump common/pyproject.toml [project].version before
+# merging. The pipeline rejects a publish if the version already exists in
+# the feed (twine --skip-existing is intentionally NOT set).
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - lakehouse-app/common/**
+
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  FEED_NAME: lakehouse-feed
+  PYTHON_VERSION: "3.11"
+
+stages:
+  - stage: TestAndPublish
+    displayName: Test and publish lakehouse-common
+    jobs:
+      - job: Build
+        displayName: Run tests and build wheel
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: $(PYTHON_VERSION)
+            displayName: Use Python $(PYTHON_VERSION)
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install hatch pytest pytest-mock
+            displayName: Install build tools
+
+          - task: PipAuthenticate@1
+            inputs:
+              artifactFeeds: $(FEED_NAME)
+            displayName: Authenticate to $(FEED_NAME)
+
+          - script: |
+              pip install -e "common[dev]"
+            displayName: Install lakehouse-common with dev extras
+
+          - script: |
+              python -m pytest lakehouse-app/tests/unit/ \
+                --ignore=lakehouse-app/tests/unit/test_schema_enforcement.py \
+                --ignore=lakehouse-app/tests/unit/test_deduplication.py \
+                --ignore=lakehouse-app/tests/unit/test_normalization.py \
+                --ignore=lakehouse-app/tests/unit/test_validation_rules.py \
+                -v --tb=short
+            displayName: Run unit tests (non-Spark)
+
+          - script: |
+              cd common
+              hatch build --clean
+            displayName: Build wheel
+
+          - task: TwineAuthenticate@1
+            inputs:
+              artifactFeeds: $(FEED_NAME)
+            displayName: Authenticate Twine to $(FEED_NAME)
+
+          - script: |
+              pip install twine
+              twine upload --repository $(FEED_NAME) common/dist/*.whl
+            displayName: Publish wheel to $(FEED_NAME)
+
+          - publish: common/dist
+            artifact: lakehouse-common-wheel
+            displayName: Archive wheel artifact

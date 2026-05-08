@@ -1,0 +1,53 @@
+{
+    "name": "aas_pause_resume",
+    "properties": {
+        "description": "Pauses the AAS server at 20:00 UTC and resumes it at 07:00 UTC on weekdays to reduce cost. Triggered by two scheduled triggers: aas_pause (20:00) and aas_resume (07:00).",
+        "activities": [
+            {
+                "name": "ManageAASServer",
+                "description": "Calls the Azure Management REST API to suspend or resume the AAS server. The action (suspend|resume) is passed as a pipeline parameter.",
+                "type": "WebActivity",
+                "dependsOn": [],
+                "userProperties": [],
+                "typeProperties": {
+                    "method": "POST",
+                    "url": {
+                        "value": "@concat('https://management.azure.com/subscriptions/', pipeline().parameters.subscription_id, '/resourceGroups/', pipeline().parameters.resource_group, '/providers/Microsoft.AnalysisServices/servers/', pipeline().parameters.server_name, '/', pipeline().parameters.action, '?api-version=2017-08-01')",
+                        "type": "Expression"
+                    },
+                    "authentication": {
+                        "type": "MSI",
+                        "resource": "https://management.azure.com/"
+                    },
+                    "body": " "
+                },
+                "policy": {
+                    "timeout": "0.00:10:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                }
+            }
+        ],
+        "parameters": {
+            "action": {
+                "type": "String",
+                "defaultValue": "suspend"
+            },
+            "server_name": {
+                "type": "String",
+                "defaultValue": "aas-lakehouse-dev"
+            },
+            "resource_group": {
+                "type": "String",
+                "defaultValue": "rg-lakehouse-dev"
+            },
+            "subscription_id": {
+                "type": "String",
+                "defaultValue": ""
+            }
+        },
+        "annotations": []
+    }
+}

@@ -1,0 +1,127 @@
+# deploy-functions.yml
+# Builds and deploys the ingestion Function App on every push to main that
+# touches lakehouse-app/ingestion/**.
+#
+# Prerequisites (configured once in Azure DevOps):
+#   - Service connection  : lakehouse-azure   (Azure Resource Manager)
+#   - Artifacts feed      : lakehouse-feed    (for lakehouse-common wheel)
+#   - Pipeline variable   : FUNCTION_APP_NAME (e.g. func-lakehouse-dev)
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - "lakehouse-app/ingestion/**"
+      - "lakehouse-app/common/**"   # redeploy if shared library changes
+
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  PYTHON_VERSION: "3.11"
+  INGESTION_DIR: "$(System.DefaultWorkingDirectory)/lakehouse-app/ingestion"
+
+stages:
+  - stage: Build
+    displayName: "Build — ingestion function app"
+    jobs:
+      - job: BuildJob
+        displayName: Install, lint, package
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: $(PYTHON_VERSION)
+            displayName: Use Python $(PYTHON_VERSION)
+
+          # Authenticate pip against the private Artifacts feed so
+          # lakehouse-common can be resolved during install.
+          - task: PipAuthenticate@1
+            displayName: Authenticate against lakehouse-feed
+            inputs:
+              artifactFeeds: lakehouse-feed
+
+          - script: |
+              pip install --upgrade pip
+              pip install -r $(INGESTION_DIR)/requirements.txt \
+                --extra-index-url $(PIP_EXTRA_INDEX_URL)
+            displayName: Install dependencies
+
+          - script: |
+              pip install ruff
+              ruff check $(INGESTION_DIR)
+            displayName: Lint (ruff)
+            continueOnError: false
+
+          # Zip the function app for deployment
+          - task: ArchiveFiles@2
+            displayName: Zip function app
+            inputs:
+              rootFolderOrFile: $(INGESTION_DIR)
+              includeRootFolder: false
+              archiveType: zip
+              archiveFile: $(Build.ArtifactStagingDirectory)/ingestion.zip
+              replaceExistingArchive: true
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish build artifact
+            inputs:
+              targetPath: $(Build.ArtifactStagingDirectory)/ingestion.zip
+              artifact: ingestion-zip
+
+  - stage: DeployDev
+    displayName: "Deploy — dev"
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+      - deployment: DeployFunctionsDev
+        displayName: Deploy to dev Function App
+        environment: lakehouse-dev
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: DownloadPipelineArtifact@2
+                  inputs:
+                    artifact: ingestion-zip
+                    path: $(Pipeline.Workspace)
+
+                - task: AzureFunctionApp@2
+                  displayName: Deploy to func-lakehouse-dev
+                  inputs:
+                    connectedServiceNameARM: lakehouse-azure
+                    appType: functionAppLinux
+                    appName: $(FUNCTION_APP_NAME)
+                    package: $(Pipeline.Workspace)/ingestion.zip
+                    deploymentMethod: zipDeploy
+                    runtimeStack: PYTHON|3.11
+
+  - stage: DeployProd
+    displayName: "Deploy — prod"
+    dependsOn: DeployDev
+    condition: succeeded()
+    jobs:
+      - deployment: DeployFunctionsProd
+        displayName: Deploy to prod Function App
+        environment: lakehouse-prod    # approval gate in Azure DevOps Environments
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: DownloadPipelineArtifact@2
+                  inputs:
+                    artifact: ingestion-zip
+                    path: $(Pipeline.Workspace)
+
+                - task: AzureFunctionApp@2
+                  displayName: Deploy to func-lakehouse-prod
+                  inputs:
+                    connectedServiceNameARM: lakehouse-azure
+                    appType: functionAppLinux
+                    appName: $(FUNCTION_APP_NAME)
+                    package: $(Pipeline.Workspace)/ingestion.zip
+                    deploymentMethod: zipDeploy
+                    runtimeStack: PYTHON|3.11

@@ -1,0 +1,13 @@
+# Core runtime
+azure-functions>=1.18,<2.0
+
+# Azure SDK — identity + storage + Key Vault
+azure-identity>=1.15,<2.0
+azure-keyvault-secrets>=4.7,<5.0
+azure-storage-blob>=12.19,<13.0
+
+# Lakehouse shared library (published to lakehouse-feed Artifacts feed)
+lakehouse-common>=0.1.0
+
+# FTP/SFTP support (re-export from lakehouse-common[ftp])
+paramiko>=3.4,<4.0

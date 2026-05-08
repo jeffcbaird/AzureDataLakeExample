@@ -1,0 +1,11 @@
+{
+    "name": "ls-keyvault-dev",
+    "properties": {
+        "description": "Azure Key Vault — provisioned by Terraform (modules/key_vault). Referenced by pipelines for secret resolution.",
+        "type": "AzureKeyVault",
+        "typeProperties": {
+            "baseUrl": "https://kv-lakehouse-dev.vault.azure.net/"
+        },
+        "annotations": []
+    }
+}

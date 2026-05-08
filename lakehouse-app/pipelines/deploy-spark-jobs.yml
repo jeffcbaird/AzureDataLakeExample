@@ -1,0 +1,180 @@
+# Triggered on merge to main when processing/ or validation/ changes.
+# Packages the processing wheel, uploads it to ADLS, and registers/updates
+# Synapse Spark Job Definitions for each Bronze→Silver source.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - "lakehouse-app/processing/**"
+      - "lakehouse-app/validation/**"
+      - "lakehouse-app/common/**"
+
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+parameters:
+  - name: environment
+    displayName: Target environment
+    type: string
+    default: dev
+    values: [dev, prod]
+
+variables:
+  PYTHON_VERSION: "3.11"
+  WORKING_DIR: "$(System.DefaultWorkingDirectory)/lakehouse-app"
+  ADLS_ACCOUNT: "stlakehouse${{ parameters.environment }}"
+  ADLS_CONTAINER: "gold"
+  SYNAPSE_WORKSPACE: "syn-lakehouse-${{ parameters.environment }}"
+
+stages:
+  - stage: BuildAndUpload
+    displayName: "Build & upload — ${{ parameters.environment }}"
+    jobs:
+      - job: PackageAndUpload
+        displayName: Package processing wheel and upload to ADLS
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: $(PYTHON_VERSION)
+
+          # ── Authenticate to the private feed for lakehouse-common ──────────
+          - task: PipAuthenticate@1
+            displayName: Authenticate private PyPI feed
+            inputs:
+              artifactFeeds: lakehouse-feed
+
+          # ── Build lakehouse-common wheel ───────────────────────────────────
+          - script: |
+              pip install build --quiet
+              python -m build --wheel common/
+            displayName: Build lakehouse-common wheel
+            workingDirectory: $(WORKING_DIR)
+
+          # ── Lint processing and validation packages ────────────────────────
+          - script: |
+              pip install ruff --quiet
+              ruff check processing/ validation/
+            displayName: Lint processing & validation
+            workingDirectory: $(WORKING_DIR)
+
+          # ── Upload wheel + requirements to ADLS synapse/libs/ ─────────────
+          - task: AzureCLI@2
+            displayName: Upload artifacts to ADLS
+            inputs:
+              azureSubscription: lakehouse-azure
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                WHEEL=$(ls common/dist/*.whl | head -1)
+                echo "Uploading wheel: $WHEEL"
+                az storage blob upload \
+                  --account-name $(ADLS_ACCOUNT) \
+                  --container-name $(ADLS_CONTAINER) \
+                  --name "synapse/libs/$(basename $WHEEL)" \
+                  --file "$WHEEL" \
+                  --overwrite true \
+                  --auth-mode login
+
+                az storage blob upload \
+                  --account-name $(ADLS_ACCOUNT) \
+                  --container-name $(ADLS_CONTAINER) \
+                  --name "synapse/libs/requirements.txt" \
+                  --file "processing/requirements.txt" \
+                  --overwrite true \
+                  --auth-mode login
+            workingDirectory: $(WORKING_DIR)
+
+  - stage: RegisterJobDefinitions
+    displayName: "Register Spark Job Definitions — ${{ parameters.environment }}"
+    dependsOn: BuildAndUpload
+    condition: succeeded()
+    jobs:
+      - deployment: RegisterJobs
+        displayName: Upsert Synapse Spark Job Definitions
+        environment: lakehouse-${{ parameters.environment }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: Register bronze-to-silver-sales job
+                  inputs:
+                    azureSubscription: lakehouse-azure
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      az synapse spark job-definition create \
+                        --workspace-name $(SYNAPSE_WORKSPACE) \
+                        --name bronze-to-silver-sales \
+                        --file @- << 'JSON'
+                      {
+                        "name": "bronze-to-silver-sales",
+                        "properties": {
+                          "description": "Promotes sales Bronze partition to Silver Delta table.",
+                          "targetBigDataPool": { "referenceName": "sparkpool", "type": "BigDataPoolReference" },
+                          "jobProperties": {
+                            "file": "abfss://gold@$(ADLS_ACCOUNT).dfs.core.windows.net/synapse/libs/processing_job.py",
+                            "className": "",
+                            "args": [],
+                            "jars": [],
+                            "files": [],
+                            "conf": {
+                              "spark.executor.memory": "4g",
+                              "spark.driver.memory": "4g"
+                            },
+                            "numExecutors": 2,
+                            "executorCores": 4,
+                            "driverCores": 4,
+                            "environmentVariables": {
+                              "SOURCE": "sales"
+                            }
+                          },
+                          "requiredSparkVersion": "3.4"
+                        }
+                      }
+                      JSON
+
+                - task: AzureCLI@2
+                  displayName: Register bronze-to-silver-inventory job
+                  inputs:
+                    azureSubscription: lakehouse-azure
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      az synapse spark job-definition create \
+                        --workspace-name $(SYNAPSE_WORKSPACE) \
+                        --name bronze-to-silver-inventory \
+                        --file @- << 'JSON'
+                      {
+                        "name": "bronze-to-silver-inventory",
+                        "properties": {
+                          "description": "Promotes inventory Bronze partition to Silver Delta table.",
+                          "targetBigDataPool": { "referenceName": "sparkpool", "type": "BigDataPoolReference" },
+                          "jobProperties": {
+                            "file": "abfss://gold@$(ADLS_ACCOUNT).dfs.core.windows.net/synapse/libs/processing_job.py",
+                            "className": "",
+                            "args": [],
+                            "jars": [],
+                            "files": [],
+                            "conf": {
+                              "spark.executor.memory": "4g",
+                              "spark.driver.memory": "4g"
+                            },
+                            "numExecutors": 2,
+                            "executorCores": 4,
+                            "driverCores": 4,
+                            "environmentVariables": {
+                              "SOURCE": "inventory"
+                            }
+                          },
+                          "requiredSparkVersion": "3.4"
+                        }
+                      }
+                      JSON

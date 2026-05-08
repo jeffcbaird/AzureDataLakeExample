@@ -1,0 +1,25 @@
+{
+    "name": "daily_partner_drops",
+    "properties": {
+        "description": "Daily schedule trigger for ingest_partner_drops. Fires at 2024-01-01T03:05:00Z UTC.",
+        "type": "ScheduleTrigger",
+        "typeProperties": {
+            "recurrence": {
+                "frequency": "Day",
+                "interval": 1,
+                "startTime": "2024-01-01T03:05:00Z",
+                "timeZone": "UTC"
+            }
+        },
+        "pipelines": [
+            {
+                "pipelineReference": {
+                    "referenceName": "ingest_partner_drops",
+                    "type": "PipelineReference"
+                },
+                "parameters": {}
+            }
+        ],
+        "annotations": []
+    }
+}

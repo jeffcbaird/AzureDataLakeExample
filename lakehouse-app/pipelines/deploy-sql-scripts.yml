@@ -1,0 +1,135 @@
+# Triggered on merge to main when SQL scripts change.
+# Applies Gold Delta CONSTRAINTS and Serverless SQL DDL (external tables + views)
+# idempotently against the target Synapse workspace.
+#
+# Run order:
+#   1. Gold CONSTRAINTS   (ALTER TABLE … ADD CONSTRAINT IF NOT EXISTS)
+#   2. External tables    (CREATE EXTERNAL TABLE IF NOT EXISTS)
+#   3. Views              (CREATE OR ALTER VIEW)
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - "lakehouse-app/sql/**"
+
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+parameters:
+  - name: environment
+    displayName: Target environment
+    type: string
+    default: dev
+    values: [dev, prod]
+
+variables:
+  SYNAPSE_WORKSPACE: "syn-lakehouse-${{ parameters.environment }}"
+  SERVERLESS_ENDPOINT: "syn-lakehouse-${{ parameters.environment }}-ondemand.sql.azuresynapse.net"
+  ADLS_ACCOUNT: "stlakehouse${{ parameters.environment }}"
+  SQL_DIR: "$(System.DefaultWorkingDirectory)/lakehouse-app/sql"
+
+stages:
+  - stage: DeploySQL
+    displayName: "Deploy SQL — ${{ parameters.environment }}"
+    jobs:
+      - deployment: ApplySQL
+        displayName: Apply constraints + DDL
+        environment: lakehouse-${{ parameters.environment }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                # ── Install sqlcmd (cross-platform) ───────────────────────────
+                - script: |
+                    curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+                      | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+                    curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list \
+                      | sudo tee /etc/apt/sources.list.d/mssql-release.list
+                    sudo apt-get update -q
+                    sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18 unixodbc-dev
+                    echo "/opt/mssql-tools18/bin" >> $GITHUB_PATH
+                  displayName: Install sqlcmd
+
+                # ── Obtain AAD token for Synapse Serverless ───────────────────
+                - task: AzureCLI@2
+                  displayName: Get AAD access token
+                  name: GetToken
+                  inputs:
+                    azureSubscription: lakehouse-azure
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      TOKEN=$(az account get-access-token \
+                        --resource https://database.windows.net/ \
+                        --query accessToken -o tsv)
+                      echo "##vso[task.setvariable variable=AAD_TOKEN;issecret=true]$TOKEN"
+
+                # ── Helper: run a SQL file via sqlcmd ─────────────────────────
+                # Shared across all three script groups below.
+
+                # ── 1. Gold Delta CONSTRAINTS ─────────────────────────────────
+                - task: AzureCLI@2
+                  displayName: Apply Gold constraints
+                  inputs:
+                    azureSubscription: lakehouse-azure
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      /opt/mssql-tools18/bin/sqlcmd \
+                        -S $(SERVERLESS_ENDPOINT) \
+                        -d master \
+                        -P "$(AAD_TOKEN)" \
+                        -G \
+                        -i $(SQL_DIR)/gold/constraints.sql \
+                        -b -e
+                    env:
+                      AAD_TOKEN: $(AAD_TOKEN)
+
+                # ── 2. External tables ────────────────────────────────────────
+                - task: AzureCLI@2
+                  displayName: Deploy external tables
+                  inputs:
+                    azureSubscription: lakehouse-azure
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      for f in $(SQL_DIR)/serverless/external_tables/*.sql; do
+                        echo "Applying: $f"
+                        /opt/mssql-tools18/bin/sqlcmd \
+                          -S $(SERVERLESS_ENDPOINT) \
+                          -d gold \
+                          -P "$(AAD_TOKEN)" \
+                          -G \
+                          -i "$f" \
+                          -b -e
+                      done
+                    env:
+                      AAD_TOKEN: $(AAD_TOKEN)
+
+                # ── 3. Views ──────────────────────────────────────────────────
+                - task: AzureCLI@2
+                  displayName: Deploy views
+                  inputs:
+                    azureSubscription: lakehouse-azure
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      for f in $(SQL_DIR)/serverless/views/*.sql; do
+                        echo "Applying: $f"
+                        /opt/mssql-tools18/bin/sqlcmd \
+                          -S $(SERVERLESS_ENDPOINT) \
+                          -d gold \
+                          -P "$(AAD_TOKEN)" \
+                          -G \
+                          -i "$f" \
+                          -b -e
+                      done
+                    env:
+                      AAD_TOKEN: $(AAD_TOKEN)

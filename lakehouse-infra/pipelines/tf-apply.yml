@@ -1,0 +1,93 @@
+# Triggered on merge to main.
+# Applies to dev automatically; prod requires a manual approval gate.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - "lakehouse-infra/**"
+
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  TF_VERSION: "1.9.5"
+  TF_WORKING_DIR: "$(System.DefaultWorkingDirectory)/lakehouse-infra"
+
+stages:
+  - stage: ApplyDev
+    displayName: "Apply — dev"
+    jobs:
+      - deployment: TerraformApplyDev
+        displayName: terraform apply (dev)
+        environment: lakehouse-dev
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: TerraformInstaller@1
+                  inputs:
+                    terraformVersion: $(TF_VERSION)
+
+                - task: TerraformTaskV4@4
+                  displayName: terraform init
+                  inputs:
+                    provider: azurerm
+                    command: init
+                    workingDirectory: $(TF_WORKING_DIR)
+                    backendServiceArm: lakehouse-azure
+                    backendAzureRmResourceGroupName: rg-lakehouse-tfstate
+                    backendAzureRmStorageAccountName: stlakehousetfstate
+                    backendAzureRmContainerName: tfstate
+                    backendAzureRmKey: lakehouse-dev.tfstate
+
+                - task: TerraformTaskV4@4
+                  displayName: terraform apply
+                  inputs:
+                    provider: azurerm
+                    command: apply
+                    workingDirectory: $(TF_WORKING_DIR)
+                    commandOptions: "-var-file=environments/dev.tfvars -auto-approve"
+                    environmentServiceNameAzureRM: lakehouse-azure
+
+  - stage: ApplyProd
+    displayName: "Apply — prod"
+    dependsOn: ApplyDev
+    condition: succeeded()
+    jobs:
+      - deployment: TerraformApplyProd
+        displayName: terraform apply (prod)
+        environment: lakehouse-prod      # approval gate configured in Azure DevOps Environments
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: TerraformInstaller@1
+                  inputs:
+                    terraformVersion: $(TF_VERSION)
+                - task: TerraformTaskV4@4
+                  displayName: terraform init
+                  inputs:
+                    provider: azurerm
+                    command: init
+                    workingDirectory: $(TF_WORKING_DIR)
+                    backendServiceArm: lakehouse-azure
+                    backendAzureRmResourceGroupName: rg-lakehouse-tfstate
+                    backendAzureRmStorageAccountName: stlakehousetfstate
+                    backendAzureRmContainerName: tfstate
+                    backendAzureRmKey: lakehouse-prod.tfstate
+                - task: TerraformTaskV4@4
+                  displayName: terraform apply
+                  inputs:
+                    provider: azurerm
+                    command: apply
+                    workingDirectory: $(TF_WORKING_DIR)
+                    commandOptions: "-var-file=environments/prod.tfvars -auto-approve"
+                    environmentServiceNameAzureRM: lakehouse-azure

@@ -1,0 +1,126 @@
+# Triggered on merge to main when the AAS model or its deploy script changes.
+# Deploys the tabular model to the target AAS server, then processes (refreshes) it.
+#
+# Pipeline stages:
+#   1. ValidateModel   — lint the .bim with tabular-editor CLI
+#   2. DeployModel     — deploy TMSL to AAS via tabular-editor
+#   3. ProcessModel    — trigger a Full process so Power BI reports see current data
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - "lakehouse-app/aas/**"
+
+pr: none
+
+pool:
+  vmImage: windows-latest   # tabular-editor runs best on Windows agents
+
+parameters:
+  - name: environment
+    displayName: Target environment
+    type: string
+    default: dev
+    values: [dev, prod]
+
+variables:
+  AAS_SERVER: "asazure://westus2.asazure.windows.net/aas-lakehouse-${{ parameters.environment }}"
+  AAS_DB: "lakehouse-model"
+  MODEL_PATH: "$(System.DefaultWorkingDirectory)/lakehouse-app/aas/model.bim"
+  TE_VERSION: "2.18.0"
+  TE_URL: "https://github.com/TabularEditor/TabularEditor/releases/download/$(TE_VERSION)/TabularEditor.Portable.zip"
+
+stages:
+  - stage: ValidateModel
+    displayName: "Validate model — ${{ parameters.environment }}"
+    jobs:
+      - job: Validate
+        displayName: Lint .bim with Tabular Editor
+        steps:
+          - task: PowerShell@2
+            displayName: Install Tabular Editor CLI
+            inputs:
+              targetType: inline
+              script: |
+                $dest = "$(Agent.TempDirectory)\TabularEditor"
+                New-Item -ItemType Directory -Force $dest | Out-Null
+                Invoke-WebRequest -Uri "$(TE_URL)" -OutFile "$dest\TabularEditor.zip"
+                Expand-Archive -Path "$dest\TabularEditor.zip" -DestinationPath $dest -Force
+                Write-Host "##vso[task.prependpath]$dest"
+
+          - task: PowerShell@2
+            displayName: Run BPA best-practice analysis
+            inputs:
+              targetType: inline
+              script: |
+                $result = & TabularEditor.exe "$(MODEL_PATH)" -A -V 2>&1
+                Write-Host $result
+                if ($LASTEXITCODE -ne 0) { throw "BPA check failed" }
+
+  - stage: DeployModel
+    displayName: "Deploy model — ${{ parameters.environment }}"
+    dependsOn: ValidateModel
+    condition: succeeded()
+    jobs:
+      - deployment: Deploy
+        displayName: Deploy TMSL to AAS
+        environment: lakehouse-${{ parameters.environment }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: PowerShell@2
+                  displayName: Install Tabular Editor CLI
+                  inputs:
+                    targetType: inline
+                    script: |
+                      $dest = "$(Agent.TempDirectory)\TabularEditor"
+                      New-Item -ItemType Directory -Force $dest | Out-Null
+                      Invoke-WebRequest -Uri "$(TE_URL)" -OutFile "$dest\TabularEditor.zip"
+                      Expand-Archive -Path "$dest\TabularEditor.zip" -DestinationPath $dest -Force
+                      Write-Host "##vso[task.prependpath]$dest"
+
+                - task: AzurePowerShell@5
+                  displayName: Deploy model to AAS
+                  inputs:
+                    azureSubscription: lakehouse-azure
+                    ScriptType: InlineScript
+                    azurePowerShellVersion: LatestVersion
+                    Inline: |
+                      # Acquire AAD token for AAS
+                      $token = (Get-AzAccessToken -ResourceUrl "https://*.asazure.windows.net").Token
+
+                      # Deploy .bim — creates DB if absent, replaces model if present
+                      $result = TabularEditor.exe "$(MODEL_PATH)" `
+                          -S "$(AAS_SERVER)" `
+                          -D "$(AAS_DB)" `
+                          -O -C -P -R -M -E -V `
+                          -token $token 2>&1
+
+                      Write-Host $result
+                      if ($LASTEXITCODE -ne 0) { throw "Deploy failed (exit $LASTEXITCODE)" }
+
+  - stage: ProcessModel
+    displayName: "Process model — ${{ parameters.environment }}"
+    dependsOn: DeployModel
+    condition: succeeded()
+    jobs:
+      - job: Process
+        displayName: Trigger Full process on AAS
+        steps:
+          - task: AnalysisServicesProcess@1
+            displayName: Process AAS model (Full)
+            inputs:
+              connectionType: connectionString
+              connectionString: "$(AAS_SERVER)"
+              databaseName: "$(AAS_DB)"
+              loginType: spn
+              spnClientId: "$(AAS_SPN_CLIENT_ID)"
+              spnClientSecret: "$(AAS_SPN_SECRET)"
+              tenantId: "$(AAS_TENANT_ID)"
+              processType: processFull

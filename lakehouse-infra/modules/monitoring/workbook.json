@@ -1,0 +1,184 @@
+{
+  "version": "Notebook/1.0",
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json",
+  "parameters": [
+    {
+      "id": "workspace-param",
+      "version": "KqlParameterItem/1.0",
+      "name": "workspace",
+      "type": 5,
+      "isRequired": true,
+      "value": "${workspace_id}",
+      "label": "Log Analytics Workspace"
+    },
+    {
+      "id": "serverless-param",
+      "version": "KqlParameterItem/1.0",
+      "name": "serverless_endpoint",
+      "type": 1,
+      "isRequired": false,
+      "value": "${synapse_serverless_endpoint}",
+      "label": "Synapse Serverless Endpoint"
+    },
+    {
+      "id": "timerange-param",
+      "version": "KqlParameterItem/1.0",
+      "name": "TimeRange",
+      "type": 4,
+      "isRequired": true,
+      "value": { "durationMs": 43200000 },
+      "label": "Time Range"
+    }
+  ],
+  "items": [
+    {
+      "type": 1,
+      "name": "header-kpi",
+      "content": {
+        "json": "## Pipeline KPIs — ${environment}\nLast 12 hours. Refresh with the toolbar button above."
+      }
+    },
+    {
+      "type": 3,
+      "name": "kpi-pipeline-success",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Pipeline Success Rate (12 h)",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "query": "ADFPipelineRun\n| where TimeGenerated > ago(12h)\n| summarize total = count(), succeeded = countif(Status == \"Succeeded\"), failed = countif(Status == \"Failed\") by bin(TimeGenerated, 1h), PipelineName\n| extend success_rate = round(todouble(succeeded) / total * 100, 1)\n| project TimeGenerated, PipelineName, total, succeeded, failed, success_rate\n| order by TimeGenerated desc",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "success_rate",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "colors",
+                "thresholdsGrid": [
+                  { "operator": "<", "thresholdValue": "95", "representation": "redBright", "text": "{0}%" },
+                  { "operator": "Default", "thresholdValue": null, "representation": "green", "text": "{0}%" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 1,
+      "name": "header-source-health",
+      "content": {
+        "json": "## Source Health"
+      }
+    },
+    {
+      "type": 3,
+      "name": "source-health-table",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Last Successful Ingestion per Source",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "query": "StorageBlobLogs\n| where OperationName in (\"PutBlob\", \"PutBlock\")\n| where Uri contains \"/bronze/\"\n| extend source = tostring(split(Uri, \"/\")[3])\n| summarize last_write = max(TimeGenerated), file_count = count() by source\n| extend age_hours = round(datetime_diff('hour', now(), last_write), 1)\n| extend status = iff(age_hours > 6, \"STALE\", \"OK\")\n| project source, last_write, age_hours, file_count, status\n| order by age_hours desc",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "status",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "colors",
+                "thresholdsGrid": [
+                  { "operator": "==", "thresholdValue": "STALE", "representation": "redBright", "text": "{0}" },
+                  { "operator": "Default", "thresholdValue": null, "representation": "green", "text": "{0}" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 1,
+      "name": "header-dq",
+      "content": {
+        "json": "## Data Quality Violations\nPulled from `silver.dq_results` via Synapse Serverless SQL. Shows ERROR and WARNING rule failures for the last 7 days."
+      }
+    },
+    {
+      "type": 3,
+      "name": "dq-violations",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "DQ Rule Failures (last 7 days)",
+        "queryType": 8,
+        "resourceType": "microsoft.synapse/workspaces",
+        "crossComponentResources": ["${synapse_workspace_resource_id}"],
+        "visualization": "table",
+        "query": "SELECT TOP 200\n    run_timestamp,\n    table_name,\n    rule_name,\n    severity,\n    passed,\n    failing_count\nFROM OPENROWSET(\n    BULK 'silver/dq_results/**',\n    DATA_SOURCE = 'gold_adls',\n    FORMAT = 'DELTA'\n) WITH (\n    run_id        VARCHAR(64),\n    table_name    VARCHAR(128),\n    rule_name     VARCHAR(128),\n    severity      VARCHAR(16),\n    passed        BIT,\n    failing_count BIGINT,\n    run_timestamp VARCHAR(50)\n) AS dq\nWHERE passed = 0\n  AND TRY_CAST(run_timestamp AS DATETIME2) >= DATEADD(DAY, -7, GETUTCDATE())\nORDER BY run_timestamp DESC",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "severity",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "colors",
+                "thresholdsGrid": [
+                  { "operator": "==", "thresholdValue": "ERROR",   "representation": "redBright", "text": "{0}" },
+                  { "operator": "==", "thresholdValue": "WARNING", "representation": "yellow",    "text": "{0}" },
+                  { "operator": "Default", "thresholdValue": null,  "representation": "blue",      "text": "{0}" }
+                ]
+              }
+            },
+            {
+              "columnMatch": "failing_count",
+              "formatter": 4,
+              "formatOptions": { "palette": "redGreen", "min": 0 }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 1,
+      "name": "header-tier-counts",
+      "content": {
+        "json": "## Tier Row Counts\nGold table row counts from `silver._table_registry` (written by the Silver→Gold Spark job on each run)."
+      }
+    },
+    {
+      "type": 3,
+      "name": "tier-row-counts",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Gold Table Freshness & Row Counts",
+        "queryType": 8,
+        "resourceType": "microsoft.synapse/workspaces",
+        "crossComponentResources": ["${synapse_workspace_resource_id}"],
+        "visualization": "table",
+        "query": "SELECT\n    table_name,\n    owner_team,\n    FORMAT(TRY_CAST(last_refreshed_at AS DATETIME2), 'yyyy-MM-dd HH:mm') AS last_refreshed_at,\n    row_count,\n    sla_by_utc,\n    CASE\n        WHEN TRY_CAST(last_refreshed_at AS DATETIME2) < DATEADD(HOUR, -26, GETUTCDATE()) THEN 'STALE'\n        ELSE 'OK'\n    END AS freshness_status,\n    description\nFROM OPENROWSET(\n    BULK 'silver/_table_registry/**',\n    DATA_SOURCE = 'gold_adls',\n    FORMAT = 'DELTA'\n) WITH (\n    table_name        VARCHAR(128),\n    owner_team        VARCHAR(128),\n    last_refreshed_at VARCHAR(50),\n    row_count         BIGINT,\n    sla_by_utc        VARCHAR(10),\n    description       VARCHAR(512)\n) AS reg\nORDER BY table_name",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "freshness_status",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "colors",
+                "thresholdsGrid": [
+                  { "operator": "==", "thresholdValue": "STALE", "representation": "redBright", "text": "{0}" },
+                  { "operator": "Default", "thresholdValue": null, "representation": "green",    "text": "{0}" }
+                ]
+              }
+            },
+            {
+              "columnMatch": "row_count",
+              "formatter": 4,
+              "formatOptions": { "palette": "blue", "min": 0 }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

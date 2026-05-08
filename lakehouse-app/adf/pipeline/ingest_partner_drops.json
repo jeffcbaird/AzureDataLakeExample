@@ -1,0 +1,63 @@
+{
+    "name": "ingest_partner_drops",
+    "properties": {
+        "description": "Calls the ingest_partner_drops Azure Function then captures the returned record count. ADF handles scheduling and retry; the Function handles IO and writes NDJSON to bronze.",
+        "activities": [
+            {
+                "name": "CallIngestPartnerDrops",
+                "description": "POST to the ingest_partner_drops HTTP-triggered function. Response body must include {\"record_count\": N}.",
+                "type": "AzureFunctionActivity",
+                "dependsOn": [],
+                "userProperties": [],
+                "typeProperties": {
+                    "functionName": "ingest_partner_drops",
+                    "method": "POST",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": {
+                        "value": "@concat('{\"date\":\"', formatDateTime(utcNow(), 'yyyy-MM-dd'), '\"}')",
+                        "type": "Expression"
+                    }
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls-functions-dev",
+                    "type": "LinkedServiceReference"
+                },
+                "policy": {
+                    "timeout": "0.01:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 300,
+                    "secureOutput": false,
+                    "secureInput": false
+                }
+            },
+            {
+                "name": "CaptureRecordCount",
+                "description": "Store the record_count from the function response for downstream monitoring.",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "CallIngestPartnerDrops",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "record_count",
+                    "value": {
+                        "value": "@activity('CallIngestPartnerDrops').output.record_count",
+                        "type": "Expression"
+                    }
+                }
+            }
+        ],
+        "variables": {
+            "record_count": {
+                "type": "Integer",
+                "defaultValue": 0
+            }
+        },
+        "annotations": []
+    }
+}

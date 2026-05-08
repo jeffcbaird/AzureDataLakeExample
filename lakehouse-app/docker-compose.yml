@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  pyspark:
+    image: jupyter/pyspark-notebook:spark-3.5.0
+    container_name: lakehouse-pyspark
+    ports:
+      - "8888:8888"   # Jupyter
+      - "4040:4040"   # Spark UI
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - ENV=local
+      - LOG_LEVEL=INFO
+      - LOCAL_DATA_ROOT=/home/jovyan/data/local
+      - SPARK_OPTS=--driver-memory 2g
+    volumes:
+      - ./:/home/jovyan/work          # full repo mounted
+      - ./data/local:/home/jovyan/data/local
+    working_dir: /home/jovyan/work
+    command: >
+      bash -c "pip install -e ./common --quiet &&
+               start-notebook.sh --NotebookApp.token=''"

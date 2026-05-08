@@ -1,0 +1,85 @@
+# Triggered on every PR targeting lakehouse-infra main.
+# Runs: terraform fmt check → validate → plan
+# The plan output is posted as a PR comment.
+
+trigger: none
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - "lakehouse-infra/**"
+
+pool:
+  vmImage: ubuntu-latest
+
+parameters:
+  - name: environment
+    displayName: Target environment
+    type: string
+    default: dev
+    values: [dev, prod]
+
+variables:
+  TF_VERSION: "1.9.5"
+  TF_WORKING_DIR: "$(System.DefaultWorkingDirectory)/lakehouse-infra"
+  TFVARS_FILE: "environments/${{ parameters.environment }}.tfvars"
+
+stages:
+  - stage: TerraformPlan
+    displayName: "Terraform Plan — ${{ parameters.environment }}"
+    jobs:
+      - job: Plan
+        displayName: fmt + validate + plan
+        steps:
+          - task: TerraformInstaller@1
+            displayName: Install Terraform $(TF_VERSION)
+            inputs:
+              terraformVersion: $(TF_VERSION)
+
+          - task: TerraformTaskV4@4
+            displayName: terraform init
+            inputs:
+              provider: azurerm
+              command: init
+              workingDirectory: $(TF_WORKING_DIR)
+              backendServiceArm: lakehouse-azure
+              backendAzureRmResourceGroupName: rg-lakehouse-tfstate
+              backendAzureRmStorageAccountName: stlakehousetfstate
+              backendAzureRmContainerName: tfstate
+              backendAzureRmKey: "lakehouse-${{ parameters.environment }}.tfstate"
+
+          - script: terraform fmt -check -recursive
+            displayName: terraform fmt check
+            workingDirectory: $(TF_WORKING_DIR)
+
+          - task: TerraformTaskV4@4
+            displayName: terraform validate
+            inputs:
+              provider: azurerm
+              command: validate
+              workingDirectory: $(TF_WORKING_DIR)
+              environmentServiceNameAzureRM: lakehouse-azure
+
+          - task: TerraformTaskV4@4
+            displayName: terraform plan
+            inputs:
+              provider: azurerm
+              command: plan
+              workingDirectory: $(TF_WORKING_DIR)
+              commandOptions: "-var-file=$(TFVARS_FILE) -out=tfplan"
+              environmentServiceNameAzureRM: lakehouse-azure
+
+          - script: |
+              terraform show -no-color tfplan > plan_output.txt
+              cat plan_output.txt
+            displayName: Show plan summary
+            workingDirectory: $(TF_WORKING_DIR)
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish plan artifact
+            inputs:
+              targetPath: "$(TF_WORKING_DIR)/tfplan"
+              artifact: tfplan-${{ parameters.environment }}

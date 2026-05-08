@@ -1,0 +1,162 @@
+{
+    "name": "silver_to_gold",
+    "properties": {
+        "description": "Runs the Silver→Gold Spark job for all sources on a given date, then triggers an AAS Full process so Power BI reports see current data. Depends on both Bronze→Silver pipelines completing for the same date partition.",
+        "activities": [
+            {
+                "name": "RunSilverToGold",
+                "description": "Execute the silver_to_gold Spark Job Definition in Synapse. Merges dims, writes facts, recomputes metrics, updates _table_registry.",
+                "type": "SynapseNotebook",
+                "dependsOn": [],
+                "userProperties": [],
+                "typeProperties": {
+                    "sparkJob": {
+                        "referenceName": "silver-to-gold",
+                        "type": "SparkJobDefinitionReference"
+                    },
+                    "parameters": {
+                        "DATE": {
+                            "value": {
+                                "value": "@pipeline().parameters.processing_date",
+                                "type": "Expression"
+                            },
+                            "type": "string"
+                        }
+                    },
+                    "conf": {
+                        "spark.dynamicAllocation.enabled": "false"
+                    }
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls-synapse-dev",
+                    "type": "LinkedServiceReference"
+                },
+                "policy": {
+                    "timeout": "02:00:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 120,
+                    "secureOutput": false,
+                    "secureInput": false
+                }
+            },
+            {
+                "name": "SetGoldRowCount",
+                "description": "Capture the fact_orders row count from the Spark job output for monitoring.",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "RunSilverToGold",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "gold_row_count",
+                    "value": {
+                        "value": "@activity('RunSilverToGold').output.fact_orders",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "ResumeAAS",
+                "description": "Ensure AAS is running before requesting a refresh — in case the pause/resume schedule overlaps with this pipeline.",
+                "type": "WebActivity",
+                "dependsOn": [
+                    {
+                        "activity": "RunSilverToGold",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "method": "POST",
+                    "url": {
+                        "value": "@concat('https://management.azure.com/subscriptions/', pipeline().parameters.subscription_id, '/resourceGroups/', pipeline().parameters.resource_group, '/providers/Microsoft.AnalysisServices/servers/', pipeline().parameters.aas_server_name, '/resume?api-version=2017-08-01')",
+                        "type": "Expression"
+                    },
+                    "authentication": {
+                        "type": "MSI",
+                        "resource": "https://management.azure.com/"
+                    },
+                    "body": " "
+                },
+                "policy": {
+                    "timeout": "0.00:10:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                }
+            },
+            {
+                "name": "RefreshAASModel",
+                "description": "Trigger a Full process on the AAS tabular model so Power BI reports immediately reflect new Gold data.",
+                "type": "WebActivity",
+                "dependsOn": [
+                    {
+                        "activity": "ResumeAAS",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "method": "POST",
+                    "url": {
+                        "value": "@concat('https://', pipeline().parameters.aas_region, '.asazure.windows.net/servers/', pipeline().parameters.aas_server_name, '/models/lakehouse-model/refreshes')",
+                        "type": "Expression"
+                    },
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": {
+                        "Type": "Full",
+                        "CommitMode": "transactional",
+                        "MaxParallelism": 2,
+                        "RetryCount": 2
+                    },
+                    "authentication": {
+                        "type": "MSI",
+                        "resource": "https://*.asazure.windows.net"
+                    }
+                },
+                "policy": {
+                    "timeout": "01:00:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                }
+            }
+        ],
+        "parameters": {
+            "processing_date": {
+                "type": "String",
+                "defaultValue": "@formatDateTime(utcNow(), 'yyyy-MM-dd')"
+            },
+            "aas_server_name": {
+                "type": "String",
+                "defaultValue": "aas-lakehouse-dev"
+            },
+            "aas_region": {
+                "type": "String",
+                "defaultValue": "westus2"
+            },
+            "resource_group": {
+                "type": "String",
+                "defaultValue": "rg-lakehouse-dev"
+            },
+            "subscription_id": {
+                "type": "String",
+                "defaultValue": ""
+            }
+        },
+        "variables": {
+            "gold_row_count": {
+                "type": "Integer",
+                "defaultValue": 0
+            }
+        },
+        "annotations": []
+    }
+}
